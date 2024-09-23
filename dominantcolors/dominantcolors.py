@@ -1,10 +1,10 @@
 from colorsys import hls_to_rgb, rgb_to_hls
-from math import isclose
 
 import click
 import numpy as np
-from fast_colorthief import get_palette
 from PIL import Image, ImageColor
+
+from .kmeans import kmeans
 
 
 def to_hex(color):
@@ -59,12 +59,12 @@ def adjust_closest_color(rgb_color, target_color, target_contrast=3):
     for lum in np.arange(1, 0, -1 / 255):
         color = hls_to_rgb(h, lum, s)
         ratio = contrast_ratio(color, target_color)
-        if isclose(ratio, target_contrast, rel_tol=5e-2):
+        if np.isclose(ratio, target_contrast, rtol=5e-2):
             break
 
     # scale rgb values to 0-255 range
-    closest_color = np.clip(color, 0, 1)
-    return (closest_color * 255).astype(int)
+    closest_color = np.clip(color, 0, 1) * 255
+    return closest_color.astype(np.uint8)
 
 
 def get_highest_contrast_color(target_color, candidate_colors, target_contrast=3):
@@ -84,25 +84,25 @@ def get_highest_contrast_color(target_color, candidate_colors, target_contrast=3
 
 
 def preprocess_image(image):
-    """Preprocess image to exclude dark and saturated dominant colors"""
+    """Preprocess image get unique hsv colors and their frequencies,
+    desaturating colors and ignoring the darkest and less frequent colors"""
 
     width, height = image.size
-    image = image.resize((width // 2, height // 2)).convert("HSV")
-    image_hsv = np.array(image)
-
-    # get darkest colors
-    ignore_mask = image_hsv[:, :, 2] < 40
-
-    # desaturate colors
-    image_hsv[:, :, 1] = np.minimum(image_hsv[:, :, 1], 200)
-
-    image_rgba = Image.fromarray(image_hsv, "HSV").convert("RGBA")
-    image_arr = np.array(image_rgba)
+    image_hsv = np.array(image.resize((width // 2, height // 2)).convert("HSV")).reshape(-1, 3)
 
     # ignore darkest colors
-    image_arr[ignore_mask, 3] = 0
+    image_hsv = image_hsv[image_hsv[:, 2] > 25]
 
-    return image_arr
+    # desaturate colors
+    image_hsv[:, 1] = np.minimum(image_hsv[:, 1], 200)
+
+    # ignore less frequent colors
+    unique_colors, freqs = np.unique(image_hsv, axis=0, return_counts=True)
+
+    unique_colors = unique_colors[freqs > 4]
+    freqs = freqs[freqs > 4]
+
+    return unique_colors, freqs / freqs.sum()
 
 
 def color_extractor(image_path, target_contrast, bg_popup, alpha, bg_topbar):
@@ -111,10 +111,15 @@ def color_extractor(image_path, target_contrast, bg_popup, alpha, bg_topbar):
     bg_topbar = ImageColor.getrgb(bg_topbar)
 
     image = Image.open(image_path)
-    image_array = preprocess_image(image)
+    unique_colors, freqs = preprocess_image(image)
 
     # get dominant colors from image
-    most_dominant_color, *candidate_colors = get_palette(image_array, 3, quality=2)
+    dominant_colors_hsv = kmeans(data=unique_colors, sample_weights=freqs, n_clusters=5)
+    dominant_colors = Image.fromarray(dominant_colors_hsv.reshape(1, -1, 3), "HSV").convert("RGB")
+    dominant_colors = np.array(dominant_colors, dtype=np.uint8).reshape(-1, 3)
+
+    most_dominant_color, *candidate_colors = dominant_colors
+
     click.echo(to_hex(most_dominant_color))
 
     # blend most dominant color with background
@@ -126,5 +131,7 @@ def color_extractor(image_path, target_contrast, bg_popup, alpha, bg_topbar):
     click.echo(to_hex(fg_color))
 
     # get mediabar progress border color
-    mediabar_progress_color = get_highest_contrast_color(bg_topbar, [most_dominant_color])
+    mediabar_progress_color = get_highest_contrast_color(
+        bg_topbar, [most_dominant_color], target_contrast
+    )
     click.echo(to_hex(mediabar_progress_color))

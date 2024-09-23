@@ -1,7 +1,5 @@
 import click
 
-from .dominantcolors import color_extractor
-
 
 @click.command()
 @click.argument("image_path", type=click.Path(exists=True))
@@ -22,5 +20,7 @@ from .dominantcolors import color_extractor
 )
 def cli(image_path, target_contrast, bg_popup, alpha, bg_topbar):
     """Extract dominant colors from IMAGE_PATH"""
+
+    from .dominantcolors import color_extractor
 
     color_extractor(image_path, target_contrast, bg_popup, alpha, bg_topbar)
